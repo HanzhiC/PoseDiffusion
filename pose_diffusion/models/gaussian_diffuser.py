@@ -161,11 +161,11 @@ class GaussianDiffusion(nn.Module):
         register_buffer("alphas_cumprod_prev", alphas_cumprod_prev)
 
         # calculations for diffusion q(x_t | x_{t-1}) and others
-        register_buffer("sqrt_alphas_cumprod", torch.sqrt(alphas_cumprod))
-        register_buffer("sqrt_one_minus_alphas_cumprod", torch.sqrt(1.0 - alphas_cumprod))
-        register_buffer("log_one_minus_alphas_cumprod", torch.log(1.0 - alphas_cumprod))
-        register_buffer("sqrt_recip_alphas_cumprod", torch.sqrt(1.0 / alphas_cumprod))
-        register_buffer("sqrt_recipm1_alphas_cumprod", torch.sqrt(1.0 / alphas_cumprod - 1))
+        register_buffer("sqrt_alphas_cumprod", torch.sqrt(alphas_cumprod)) # [timesteps,]
+        register_buffer("sqrt_one_minus_alphas_cumprod", torch.sqrt(1.0 - alphas_cumprod)) # [timesteps,]
+        register_buffer("log_one_minus_alphas_cumprod", torch.log(1.0 - alphas_cumprod)) # [timesteps,]
+        register_buffer("sqrt_recip_alphas_cumprod", torch.sqrt(1.0 / alphas_cumprod)) # [timesteps,]
+        register_buffer("sqrt_recipm1_alphas_cumprod", torch.sqrt(1.0 / alphas_cumprod - 1)) # [timesteps,]
 
         # calculations for posterior q(x_{t-1} | x_t, x_0)
         posterior_variance = betas * (1.0 - alphas_cumprod_prev) / (1.0 - alphas_cumprod)
@@ -199,6 +199,7 @@ class GaussianDiffusion(nn.Module):
         )
 
     def q_posterior(self, x_start, x_t, t):
+        # This gives the probability of p(x_{t-1} | x_t, x_0)
         posterior_mean = (
             extract(self.posterior_mean_coef1, t, x_t.shape) * x_start
             + extract(self.posterior_mean_coef2, t, x_t.shape) * x_t
@@ -231,16 +232,18 @@ class GaussianDiffusion(nn.Module):
     def p_mean_variance(
         self, x: torch.Tensor, t: int, z: torch.Tensor, x_self_cond=None, clip_denoised=False  # B x N_x x dim
     ):
+        # Note the trick here, it first computes x_0 from the current prediction
+        # The predict the mean and variance of p(x_{t-1} | x_t, x_0) from x_t and x_0
         preds = self.model_predictions(x, t, z)
 
         x_start = preds.pred_x_start
-
+        
         if clip_denoised:
             raise NotImplementedError(
                 "We don't clip the output because \
                     pose does not have a clear bound."
             )
-
+        # This gives the probability of p(x_{t-1} | x_t, x_0)
         (model_mean, posterior_variance, posterior_log_variance) = self.q_posterior(x_start=x_start, x_t=x, t=t)
 
         return model_mean, posterior_variance, posterior_log_variance, x_start
@@ -263,6 +266,7 @@ class GaussianDiffusion(nn.Module):
 
         b, *_, device = *x.shape, x.device
         batched_times = torch.full((x.shape[0],), t, device=x.device, dtype=torch.long)
+        # Reverse process, note here the probability is p(x_{t-1} | x_t, x_0)
         model_mean, _, model_log_variance, x_start = self.p_mean_variance(
             x=x, t=batched_times, z=z, x_self_cond=x_self_cond, clip_denoised=clip_denoised
         )
@@ -306,14 +310,18 @@ class GaussianDiffusion(nn.Module):
         return sample_fn(shape, z=z, cond_fn=cond_fn, cond_start_step=cond_start_step)
 
     def p_losses(self, x_start, t, z=None, noise=None):
-        noise = default(noise, lambda: torch.randn_like(x_start))
         # noise sample
+        noise = default(noise, lambda: torch.randn_like(x_start))
+        # Forward process, add noise, x_t
         x = self.q_sample(x_start=x_start, t=t, noise=noise)
-        model_out = self.model(x, t, z)
+        # same shape as x
+        model_out = self.model(x, t, z) 
 
         if self.objective == "pred_noise":
-            target = noise
-            x_0_pred = self.predict_start_from_noise(x, t, model_out)
+            # model_out is the predicted noise
+            target = noise 
+            # Use the closed form in the forward process
+            x_0_pred = self.predict_start_from_noise(x, t, model_out) 
         elif self.objective == "pred_x0":
             target = x_start
             x_0_pred = model_out
@@ -328,7 +336,8 @@ class GaussianDiffusion(nn.Module):
 
     def forward(self, pose, z=None, *args, **kwargs):
         b = len(pose)
-        t = torch.randint(0, self.num_timesteps, (b,), device=pose.device).long()
+        # sample time step randomly
+        t = torch.randint(0, self.num_timesteps, (b,), device=pose.device).long() #[b, ]
         return self.p_losses(pose, t, z=z, *args, **kwargs)
 
     @property

@@ -45,8 +45,10 @@ class Denoiser(nn.Module):
         # we use 2 encoder layers and 6 decoder layers
         # here we use a transformer with 8 encoder layers
         # call TransformerEncoderWrapper() to build a encoder-only transformer
-        self._trunk = instantiate(TRANSFORMER, _recursive_=False)
-
+        # self._trunk = instantiate(TRANSFORMER, _recursive_=False)
+        self._trunk = TransformerEncoderWrapper(d_model=512, nhead=4, 
+                                                num_encoder_layers=8, 
+                                                dim_feedforward=1024,)
         # TODO: change the implementation of MLP to a more mature one
         self._last = MLP(d_model, [mlp_hidden_dim, self.target_dim], norm_layer=nn.LayerNorm)
 
@@ -59,6 +61,7 @@ class Denoiser(nn.Module):
 
         x_emb = self.pose_embed(x)
 
+        
         if self.pivot_cam_onehot:
             # add the one hot vector identifying the first camera as pivot
             cam_pivot_id = torch.zeros_like(z[..., :1])
@@ -66,12 +69,19 @@ class Denoiser(nn.Module):
             z = torch.cat([z, cam_pivot_id], dim=-1)
 
         feed_feats = torch.cat([x_emb, t_emb, z], dim=-1)
-
-        input_ = self._first(feed_feats)
-
+        print("x_emb.shape: ", x_emb.shape) # B x N x dim_t_emb
+        print("t_emb.shape: ", t_emb.shape) # B x N x dim_x_emb
+        print("z.shape: ", z.shape) # B x N x dim_z
+        print("feed_feats.shape: ", feed_feats.shape) # B x N x (dim_t + dim_x + dim_z)
+        
+        input_ = self._first(feed_feats) # Fuse inputs, time, and conditional features
+        print("Fused input_.shape: ", input_.shape) # B x N x d_model
+        
         feats_ = self._trunk(input_)
+        print("Fused feats_.shape: ", feats_.shape) # B x N x d_model
 
         output = self._last(feats_)
+        print("Outputs.shape: ", output.shape) # B x N x dim_x
 
         return output
 
